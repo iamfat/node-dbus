@@ -24,6 +24,9 @@ string GetSignatureFromV8Type(Local<Value>& value);
 bool EncodeObject(Local<Value> value, DBusMessageIter* iter,
                   const DBusSignatureIter* siter,
                   const DBusSignatureIter* concreteSiter = nullptr);
+
+bool EncodeObject(Local<Value> value, DBusMessageIter* iter,
+                  Local<Value> signatures, const char *concreteSignature = nullptr);
 }  // namespace Encoder
 
 #endif

@@ -72,18 +72,17 @@ static inline DBusObjectPathVTable CreateVTable() {
 }
 
 static void _SendMessageReply(DBusConnection* connection, DBusMessage* message,
-                              Local<Value> reply_value, char* signature) {
+                              Local<Value> reply_value, Local<Value> signature) {
   Nan::HandleScope scope;
   DBusMessageIter iter;
-  DBusSignatureIter siter;
   DBusMessage* reply;
   dbus_uint32_t serial = 0;
 
   reply = dbus_message_new_method_return(message);
 
   dbus_message_iter_init_append(reply, &iter);
-  dbus_signature_iter_init(&siter, signature);
-  if (!Encoder::EncodeObject(reply_value, &iter, &siter)) {
+
+  if (!Encoder::EncodeObject(reply_value, &iter, signature)) {
     printf("Failed to encode reply value\n");
   }
 
@@ -169,9 +168,7 @@ NAN_METHOD(SendMessageReply) {
     return;
   }
 
-  char* signature = strdup(*Nan::Utf8String(info[2]));
-  _SendMessageReply(connection, message, info[1], signature);
-  dbus_free(signature);
+  _SendMessageReply(connection, message, info[1], info[2]);
 
   return;
 }

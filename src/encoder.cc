@@ -129,9 +129,10 @@ string GetSignatureFromV8Type(Local<Value>& value) {
     }
     if (CheckArrayItems(arrayData, IsArray)) {
       Local<Value> lastArrayItem =
-          arrayData->Get(
-              Nan::GetCurrentContext(),
-              static_cast<uint32_t>(arrayDataLength - 1)).ToLocalChecked();
+          arrayData
+              ->Get(Nan::GetCurrentContext(),
+                    static_cast<uint32_t>(arrayDataLength - 1))
+              .ToLocalChecked();
       string lastArrayItemSig = GetSignatureFromV8Type(lastArrayItem);
 
       if (CheckArrayItems(arrayData, HasSameSig, lastArrayItemSig.c_str())) {
@@ -342,8 +343,8 @@ bool EncodeObject(Local<Value> value, DBusMessageIter* iter,
 
         // process each elements
         Local<Array> prop_names =
-            value_object->GetPropertyNames(Nan::GetCurrentContext()).
-                ToLocalChecked();
+            value_object->GetPropertyNames(Nan::GetCurrentContext())
+                .ToLocalChecked();
         unsigned int len = prop_names->Length();
 
         bool failed = false;
@@ -355,7 +356,8 @@ bool EncodeObject(Local<Value> value, DBusMessageIter* iter,
           Local<Value> prop_key =
               prop_names->Get(Nan::GetCurrentContext(), i).ToLocalChecked();
           Local<Value> prop_value =
-              value_object->Get(Nan::GetCurrentContext(),prop_key).ToLocalChecked();
+              value_object->Get(Nan::GetCurrentContext(), prop_key)
+                  .ToLocalChecked();
 
           if (IsNullOrUndefined(prop_value) || IsNullOrUndefined(prop_key)) {
             continue;
@@ -476,15 +478,16 @@ bool EncodeObject(Local<Value> value, DBusMessageIter* iter,
 
       // process each elements
       Local<Array> prop_names =
-          value_object->GetPropertyNames(Nan::GetCurrentContext()).
-              ToLocalChecked();
+          value_object->GetPropertyNames(Nan::GetCurrentContext())
+              .ToLocalChecked();
       unsigned int len = prop_names->Length();
 
       for (unsigned int i = 0; i < len; ++i) {
         Local<Value> prop_key =
             prop_names->Get(Nan::GetCurrentContext(), i).ToLocalChecked();
         Local<Value> prop_value =
-            value_object->Get(Nan::GetCurrentContext(), prop_key).ToLocalChecked();
+            value_object->Get(Nan::GetCurrentContext(), prop_key)
+                .ToLocalChecked();
 
         if (!EncodeObject(prop_value, &subIter, &structSiter,
                           &structConcreteSiter)) {
@@ -507,6 +510,165 @@ bool EncodeObject(Local<Value> value, DBusMessageIter* iter,
   }
 
   return true;
+}
+
+char* GetVariantSignature(Local<Value> signature) {
+  char* var_sig;
+  if (signature->IsObject()) {
+    var_sig = strdup(const_cast<char*>(
+        DBUS_TYPE_ARRAY_AS_STRING DBUS_DICT_ENTRY_BEGIN_CHAR_AS_STRING
+            DBUS_TYPE_STRING_AS_STRING DBUS_TYPE_VARIANT_AS_STRING
+                DBUS_DICT_ENTRY_END_CHAR_AS_STRING));
+  } else {
+    var_sig = strdup(*Nan::Utf8String(signature));
+  }
+  return var_sig;
+}
+
+bool EncodeObject(Local<Value> value, DBusMessageIter* iter,
+                  Local<Value> signature, const char* concreteSignature) {
+  Nan::HandleScope scope;
+
+  if (IsNullOrUndefined(value)) {
+    return false;
+  }
+
+  bool succeeded = true;
+
+  if (!signature->IsObject()) {
+    char* sig_str = strdup(*Nan::Utf8String(signature));
+    DBusSignatureIter siter;
+    dbus_signature_iter_init(&siter, sig_str);
+    succeeded = Encoder::EncodeObject(value, iter, &siter, nullptr);
+    dbus_free(sig_str);
+    return succeeded;
+  }
+
+  if (!value->IsObject()) {
+    printf("Failed to encode dictionary\n");
+    return false;
+  }
+
+  Local<Object> value_object =
+      value->ToObject(Nan::GetCurrentContext()).ToLocalChecked();
+  Local<Object> signature_object =
+      signature->ToObject(Nan::GetCurrentContext()).ToLocalChecked();
+
+  // process each elements
+  Local<Array> prop_names =
+      value_object->GetPropertyNames(Nan::GetCurrentContext()).ToLocalChecked();
+  unsigned int len = prop_names->Length();
+
+  Local<Value> SIG_KEY = String::NewFromUtf8(Isolate::GetCurrent(), "__sig",
+                                             NewStringType::kInternalized)
+                             .ToLocalChecked();
+
+  Local<Value> contained_signature =
+      signature_object->Get(Nan::GetCurrentContext(), SIG_KEY).ToLocalChecked();
+
+  char* contained_signature_str;
+  if (IsNullOrUndefined(contained_signature)) {
+    if (concreteSignature && *concreteSignature == DBUS_TYPE_ARRAY) {
+      contained_signature_str = strdup(concreteSignature + 1);
+    } else {
+      contained_signature_str = strdup(const_cast<char*>(
+          DBUS_DICT_ENTRY_BEGIN_CHAR_AS_STRING DBUS_TYPE_STRING_AS_STRING
+              DBUS_TYPE_VARIANT_AS_STRING DBUS_DICT_ENTRY_END_CHAR_AS_STRING));
+    }
+  } else {
+    contained_signature_str = strdup(*Nan::Utf8String(contained_signature));
+  }
+
+  DBusSignatureIter contained_siter;
+  dbus_signature_iter_init(&contained_siter, contained_signature_str);
+
+  // Open array container to process elements in there
+  DBusMessageIter contained_iter;
+  succeeded = dbus_message_iter_open_container(
+      iter, DBUS_TYPE_ARRAY, contained_signature_str, &contained_iter);
+
+  if (!succeeded) {
+    printf("Can't open container for Array type\n");
+  } else {
+    DBusSignatureIter dict_siter;
+    dbus_signature_iter_recurse(&contained_siter, &dict_siter);
+    int key_type = dbus_signature_iter_get_current_type(&dict_siter);
+
+    dbus_signature_iter_next(&dict_siter);
+    int val_type = dbus_signature_iter_get_current_type(&dict_siter);
+
+    for (unsigned int i = 0; i < len; ++i) {
+      // Getting the key and value
+      Local<Value> prop_key =
+          prop_names->Get(Nan::GetCurrentContext(), i).ToLocalChecked();
+      if (IsNullOrUndefined(prop_key)) {
+        continue;
+      }
+
+      Local<Value> prop_value =
+          value_object->Get(Nan::GetCurrentContext(), prop_key)
+              .ToLocalChecked();
+      if (IsNullOrUndefined(prop_value)) {
+        continue;
+      }
+
+      DBusMessageIter dict_iter;
+      // Open dict entry container
+      succeeded = dbus_message_iter_open_container(
+          &contained_iter, DBUS_TYPE_DICT_ENTRY, nullptr, &dict_iter);
+      if (succeeded) {
+        // if (succeeded) {
+        {
+          // Append the key
+          char* key_str = strdup(*Nan::Utf8String(prop_key));
+          succeeded =
+              dbus_message_iter_append_basic(&dict_iter, key_type, &key_str);
+          dbus_free(key_str);
+          if (!succeeded) printf("Failed to encode string key of dictionary\n");
+        }
+
+        // Append the value
+        if (!succeeded) {
+          printf("Can't open container for DICT-ENTRY\n");
+        } else {
+          Local<Value> prop_signature =
+              signature_object->Get(Nan::GetCurrentContext(), prop_key)
+                  .ToLocalChecked();
+
+          if (IsNullOrUndefined(prop_signature)) {
+            succeeded =
+                EncodeObject(prop_value, &dict_iter, &dict_siter, nullptr);
+          } else if (val_type == DBUS_TYPE_ARRAY) {
+            char* concrete_sig = dbus_signature_iter_get_signature(&dict_siter);
+            succeeded = EncodeObject(prop_value, &dict_iter, prop_signature,
+                                     concrete_sig);
+            dbus_free(concrete_sig);
+          } else {
+            // need a variant container to wrap the value
+            char* var_sig = GetVariantSignature(prop_signature);
+            DBusMessageIter var_iter;
+            succeeded = dbus_message_iter_open_container(
+                &dict_iter, DBUS_TYPE_VARIANT, var_sig, &var_iter);
+            if (!succeeded) {
+              printf("Can't open container for VARIANT type\n");
+            } else {
+              succeeded = EncodeObject(prop_value, &var_iter, prop_signature);
+              dbus_message_iter_close_container(&dict_iter, &var_iter);
+            }
+            dbus_free(var_sig);
+          }
+
+          if (!succeeded) printf("Failed to encode element of dictionary\n");
+        }
+        dbus_message_iter_close_container(&contained_iter, &dict_iter);
+      }
+    }
+  }
+
+  dbus_message_iter_close_container(iter, &contained_iter);
+  dbus_free(contained_signature_str);
+
+  return succeeded;
 }
 
 }  // namespace Encoder
